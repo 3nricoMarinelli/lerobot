@@ -70,17 +70,22 @@ def draw_axes(img, origin_lm, R, scale=100):
     cv2.putText(img, 'Y', tuple(y_end), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
     cv2.putText(img, 'Z', tuple(z_end), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-def send_hand_data(pos, euler, opening_ratio):
-    data = struct.pack('7f',
-                       pos[0], pos[1], pos[2],
-                       euler[0], euler[1], euler[2],
-                       opening_ratio)
+def send_hand_data(pos, euler, opening_ratio, delta):
+    # pos: [x, y, z], euler: [roll, pitch, yaw], opening_ratio: float, delta: [dx, dy, dz]
+    data = struct.pack(
+        '10f',
+        pos[0], pos[1], pos[2],
+        euler[0], euler[1], euler[2],
+        opening_ratio,
+        delta[0], delta[1], delta[2]
+    )
     sock.sendto(data, server_address)
 
 cap = cv2.VideoCapture(1)
 
 reference_position = None
 reference_rotation = None
+prev_rel_pos = None
 
 with mp_hands.Hands(
     model_complexity=0,
@@ -115,7 +120,6 @@ with mp_hands.Hands(
             Rm, p0, p9 = get_hand_axes_and_origin(lm)
             draw_axes(img, lm.landmark[0], Rm)
 
-            # Repères non déformés
             pt0 = undistort_landmark(lm.landmark[0], K, dist, img.shape)
             pt9 = undistort_landmark(lm.landmark[9], K, dist, img.shape)
 
@@ -129,15 +133,21 @@ with mp_hands.Hands(
             pos_cm = np.array([x_cm, y_cm, z_cm])
 
             if reference_position is None:
-                reference_position = pos_cm
+                reference_position = pos_cm.copy()
             if reference_rotation is None:
-                reference_rotation = Rm
+                reference_rotation = Rm.copy()
 
             rel_pos_cm = pos_cm - reference_position
+            if prev_rel_pos is None:
+                prev_rel_pos = rel_pos_cm.copy()
+
+            delta = rel_pos_cm - prev_rel_pos
+            prev_rel_pos = rel_pos_cm.copy()
+
             rel_rot = reference_rotation.T @ Rm
             euler_angles = get_euler_angles(rel_rot)
 
-            # Calcul de l'ouverture normalisée
+            # ouverture normalisée
             pt_thumb = undistort_landmark(lm.landmark[4], K, dist, img.shape)
             pt_pinky = undistort_landmark(lm.landmark[20], K, dist, img.shape)
             pt_index = undistort_landmark(lm.landmark[5], K, dist, img.shape)
@@ -147,7 +157,7 @@ with mp_hands.Hands(
             largeur_paume_px = pixel_distance(pt_index, pt_ring)
             opening_ratio = ouverture_px / largeur_paume_px
 
-            send_hand_data(rel_pos_cm, euler_angles, opening_ratio)
+            send_hand_data(rel_pos_cm, euler_angles, opening_ratio, delta)
 
             roll, pitch, yaw = euler_angles
             cv2.putText(img,
@@ -159,6 +169,9 @@ with mp_hands.Hands(
             cv2.putText(img,
                         f"Open ratio:{opening_ratio:.2f}",
                         (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
+            cv2.putText(img,
+                        f"dX:{delta[0]:+.2f}cm dY:{delta[1]:+.2f}cm dZ:{delta[2]:+.2f}cm",
+                        (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
 
             mp_drawing.draw_landmarks(
                 img, lm, mp_hands.HAND_CONNECTIONS,
@@ -174,6 +187,7 @@ with mp_hands.Hands(
         elif key == ord('r'):
             reference_position = None
             reference_rotation = None
+            prev_rel_pos = None
 
 cap.release()
 cv2.destroyAllWindows()
