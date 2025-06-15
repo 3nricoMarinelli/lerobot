@@ -2,10 +2,22 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import math
+import socket
+import struct
 
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 mp_styles = mp.solutions.drawing_styles
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+server_address = ('localhost', 11310)
+sock.bind(server_address)
+
+def send_hand_data(position, euler_angles):
+    """Pack and send hand tracking data"""
+    # Pack data: 3 for position, 3 for euler angles
+    data = struct.pack('6f', *position, *euler_angles)
+    sock.sendto(data, ('localhost', 11310))
 
 def normalize(v):
     return v / np.linalg.norm(v)
@@ -48,7 +60,7 @@ def draw_axes(img, origin_lm, R, scale=100):
     cv2.putText(img, 'Y', tuple(y_end), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
     cv2.putText(img, 'Z', tuple(z_end), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-cap = cv2.VideoCapture(1)
+cap = cv2.VideoCapture(0)
 
 reference_rotation = None
 reference_position = None
@@ -107,7 +119,9 @@ with mp_hands.Hands(
 
             rel_pos = pos_mm - reference_position
             rel_rot = reference_rotation.T @ Rm
-            roll, pitch, yaw = get_euler_angles(rel_rot)
+            euler_angles = get_euler_angles(rel_rot)
+            send_hand_data(rel_pos, euler_angles)
+            roll, pitch, yaw = euler_angles
 
             text_pos = f"X: {rel_pos[0]:+.1f}mm  Y: {rel_pos[1]:+.1f}mm  Z: {rel_pos[2]:+.1f}mm"
             text_rot = f"Roll: {roll:+.1f}°  Pitch: {pitch:+.1f}°  Yaw: {yaw:+.1f}°"
@@ -132,3 +146,4 @@ with mp_hands.Hands(
 
 cap.release()
 cv2.destroyAllWindows()
+sock.close()
