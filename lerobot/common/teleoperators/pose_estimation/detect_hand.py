@@ -6,6 +6,8 @@ import socket
 import struct
 import time
 
+
+
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 mp_styles = mp.solutions.drawing_styles
@@ -14,7 +16,7 @@ sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server_address = ('localhost', 11310)
 
 # Charger calibration
-with np.load("calibration_data.npz") as X:
+with np.load("lerobot/common/teleoperators/pose_estimation/calibration_data.npz") as X:
     K = X["camera_matrix"]
     dist = X["dist_coeffs"]
 
@@ -77,7 +79,7 @@ def send_hand_data(pos, euler, opening_ratio):
                        opening_ratio)
     sock.sendto(data, server_address)
 
-cap = cv2.VideoCapture(1)
+cap = cv2.VideoCapture(0)
 
 reference_position = None
 reference_rotation = None

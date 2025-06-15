@@ -55,8 +55,15 @@ def make_teleoperator_from_config(config: TeleoperatorConfig) -> Teleoperator:
         return KeyboardEndEffectorTeleop(config)
     
     elif config.type == "phone":
-        from .phone.teleop_phone import PhoneTeleop #PhoneEndEffectorTeleop  /!\ The class should be with the rotation implemented
+        from .phone.teleop_phone import PhoneTeleop
+        return PhoneTeleop(config)
 
         return  PhoneTeleop(config) #PhoneEndEffectorTeleop(config)
+    
+    elif config.type == "pose_estimation":
+        from .pose_estimation.teleop_pose_estimation import PoseEstimation
+        
+        return PoseEstimation(config)
+
     else:
         raise ValueError(config.type)

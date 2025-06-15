@@ -79,9 +79,17 @@ class SO101FollowerEndEffector(SO101Follower):
         Returns dictionary with dtype, shape, and names.
         """
         return {
-            "dtype": "float32",
-            "shape": (4,),
-            "names": {"delta_x": 0, "delta_y": 1, "delta_z": 2, "gripper": 3},
+        "dtype": "float32",
+        "shape": (7,),
+        "names": {
+            "x": 0,
+            "y": 1,
+            "z": 2,
+            "roll": 3,
+            "pitch": 4,
+            "yaw": 5,
+            "gripper": 6
+            }
         }
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
@@ -89,8 +97,8 @@ class SO101FollowerEndEffector(SO101Follower):
         Transform action from end-effector space to joint space and send to motors.
 
         Args:
-            action: Dictionary with keys 'delta_x', 'delta_y', 'delta_z' for end-effector control
-                   or a numpy array with [delta_x, delta_y, delta_z]
+            action: Dictionary with keys 'x', 'y', 'z' for end-effector control
+                   or a numpy array with [x, y, z]
 
         Returns:
             The joint-space action that was sent to the motors
@@ -103,23 +111,26 @@ class SO101FollowerEndEffector(SO101Follower):
 
         # Convert action to numpy array if not already
         if isinstance(action, dict):
-            if all(k in action for k in ["delta_x", "delta_y", "delta_z"]):
-                delta_ee = np.array(
-                    [
-                        action["delta_x"] * self.config.end_effector_step_sizes["x"],
-                        action["delta_y"] * self.config.end_effector_step_sizes["y"],
-                        action["delta_z"] * self.config.end_effector_step_sizes["z"],
-                    ],
-                    dtype=np.float32,
-                )
+            if all(k in action for k in ["x", "y", "z", "roll", "pitch", "yaw"]):
                 if "gripper" not in action:
                     action["gripper"] = 1.0
-                action = np.append(delta_ee, action["gripper"])
+                    logger.warning(
+                    f"No gripper action provided, defaulting to 1.0 (open).")
+                action = np.array([
+                    action["x"] * self.config.end_effector_step_sizes["x"],
+                    action["y"] * self.config.end_effector_step_sizes["y"],
+                    action["z"] * self.config.end_effector_step_sizes["z"],
+                    action["roll"] * self.config.end_effector_step_sizes["roll"],
+                    action["pitch"] * self.config.end_effector_step_sizes["pitch"],
+                    action["yaw"] * self.config.end_effector_step_sizes["yaw"],
+                    action["gripper"]
+                ], dtype=np.float32)
             else:
                 logger.warning(
-                    f"Expected action keys 'delta_x', 'delta_y', 'delta_z', got {list(action.keys())}"
+                    f"Expected action keys 'x', 'y', 'z', \
+                        'roll', 'pitch', 'yaw' got {list(action.keys())}"
                 )
-                action = np.zeros(4, dtype=np.float32)
+                action = np.zeros(7, dtype=np.float32)
 
         print(f"++++++++++++[DEBUG ] Actual action sent",action)
 
@@ -134,10 +145,41 @@ class SO101FollowerEndEffector(SO101Follower):
 
         # Set desired end-effector position by adding delta
         desired_ee_pos = np.eye(4)
-        desired_ee_pos[:3, :3] = self.current_ee_pos[:3, :3]  # Keep orientation
+
+        # Get current orientation
+        current_rot = self.current_ee_pos[:3, :3]
+
+        # Convert rotation deltas from degrees to radians
+        roll = np.radians(action[3])
+        pitch = np.radians(action[4])
+        yaw = np.radians(action[5])
+
+        # Create rotation matrices for each axis
+        Rx = np.array([
+            [1, 0, 0],
+            [0, np.cos(roll), -np.sin(roll)],
+            [0, np.sin(roll), np.cos(roll)]
+        ])
+
+        Ry = np.array([
+            [np.cos(pitch), 0, np.sin(pitch)],
+            [0, 1, 0],
+            [-np.sin(pitch), 0, np.cos(pitch)]
+        ])
+
+        Rz = np.array([
+            [np.cos(yaw), -np.sin(yaw), 0],
+            [np.sin(yaw), np.cos(yaw), 0],
+            [0, 0, 1]
+        ])
+
+        # Combine rotations (applying them in order: roll, pitch, yaw)
+        desired_ee_pos[:3, :3] = Rz @ Ry @ Rx
+
+        # delta_rotation = current_rot @ desired_ee_pos
 
         # Add delta to position and clip to bounds
-        desired_ee_pos[:3, 3] = self.current_ee_pos[:3, 3] + action[:3]
+        desired_ee_pos[:3, 3] = action[:3]
         if self.end_effector_bounds is not None:
             desired_ee_pos[:3, 3] = np.clip(
                 desired_ee_pos[:3, 3],
