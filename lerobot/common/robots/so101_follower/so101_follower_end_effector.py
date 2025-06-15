@@ -99,7 +99,7 @@ class SO101FollowerEndEffector(SO101Follower):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
         
-        print(f"[DEBUG send_action] Action received: {action}")
+        print(f"++++++++++++[DEBUG ] Action received",action)
 
         # Convert action to numpy array if not already
         if isinstance(action, dict):
@@ -113,13 +113,15 @@ class SO101FollowerEndEffector(SO101Follower):
                     dtype=np.float32,
                 )
                 if "gripper" not in action:
-                    action["gripper"] = [1.0]
+                    action["gripper"] = 1.0
                 action = np.append(delta_ee, action["gripper"])
             else:
                 logger.warning(
                     f"Expected action keys 'delta_x', 'delta_y', 'delta_z', got {list(action.keys())}"
                 )
                 action = np.zeros(4, dtype=np.float32)
+
+        print(f"++++++++++++[DEBUG ] Actual action sent",action)
 
         if self.current_joint_pos is None:
             # Read current joint positions

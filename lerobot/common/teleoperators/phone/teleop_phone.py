@@ -97,11 +97,11 @@ class PhoneTeleop(Teleoperator):
         self.gamepad.update()
         dx, dy, dz = self.gamepad.get_deltas()
 
-        print("**************[get_action] dx, dy and dz is:", dx, dy, dz)
+        # print("**************[get_action] dx, dy and dz is:", dx, dy, dz)
         action_dict: dict[str, Any] = {
-            "x.vel": float(dx),
-            "y.vel": float(dy),
-            "theta.vel": float(dz),
+            "delta_x": float(dx),
+            "delta_y": float(dy),
+            "delta_z": float(dz),
 
         }
 

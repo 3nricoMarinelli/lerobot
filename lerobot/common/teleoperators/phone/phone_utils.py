@@ -40,6 +40,10 @@ class InputController:
         self.intervention_flag = False
         self.open_gripper_command = False
         self.close_gripper_command = False
+        self.gyro_scale = 1.0      # tune this as needed
+        self.acc_gain = 1.0        # tune this as needed
+        self.gravity_z = 9.81      # typical gravity in m/s^2
+        self.dt = 0.1              # ~time between sensor readings, e.g. 0.1 sec
 
     def start(self):
         """Start the controller and initialize resources."""
@@ -95,6 +99,7 @@ class InputController:
             return "close"
 
 class IMUController(InputController):
+    # Check if the porte init is not interferring with the configuration_phone.py
     def __init__(self, x_step_size=0.01, y_step_size=0.01, z_step_size=0.01, port=5010):
         super().__init__(x_step_size, y_step_size, z_step_size)
         self.port = port
@@ -105,6 +110,10 @@ class IMUController(InputController):
             "ax": deque(maxlen=self.N),
             "ay": deque(maxlen=self.N),
             "az": deque(maxlen=self.N),
+            "gx": deque(maxlen=self.N),
+            "gy": deque(maxlen=self.N),
+            "gz": deque(maxlen=self.N),
+
         }
 
         # Flask app for receiving data
@@ -119,8 +128,9 @@ class IMUController(InputController):
         @self.app.route("/imu", methods=["POST"])
         def imu():
             data = request.get_json()
+            print("++++++++++   Received IMU POST:", data)
             with self.data_lock:
-                for key in ["ax", "ay", "az"]:
+                for key in ["ax", "ay", "az","gx","gy","gz"]:
                     self.imu_data[key].append(data.get(key, 0.0))
             if self.pending_vibration:
                 self.pending_vibration = False
@@ -147,7 +157,7 @@ class IMUController(InputController):
         """Start the background server for HTTP IMU input."""
         self.running = True
         self._flask_thread = threading.Thread(
-            target=lambda: self.app.run(host="0.0.0.0", port=self.port, threaded=True),
+            target=lambda: self.app.run(host="127.0.0.1", port=self.port, threaded=True),
             daemon=True,
         )
         self._flask_thread.start()
@@ -168,10 +178,15 @@ class IMUController(InputController):
         with self.data_lock:
             # Require at least one sample of each
 
+            # print("I was called 1 -------------------------------")
+
+            # for k in ["ax", "ay", "az", "gx", "gy", "gz"]:
+            #     print(f"Buffer length for {k}: {len(self.imu_data[k])}")
             if any(len(self.imu_data[k]) == 0 for k in ["ax", "ay", "az", "gx", "gy", "gz"]):
+                print("One or more buffers are empty, returning 0s.")
                 return 0.0, 0.0, 0.0
+            # print("I was called  2-------------------------------")
             
-            print("I was called -------------------------------")
         
 
             # Smoothed averages
@@ -196,7 +211,7 @@ class IMUController(InputController):
         dy = dy_g + dy_lin
         dz = dz_g + dz_lin
 
-        print("******************************************************************************************************[get_deltas]", dx, dy, dz)
+        # print("******************************************************************************************************[get_deltas]", dx, dy, dz)
 
         # print("[get_deltas] self.imu_data", actiondict)
 
