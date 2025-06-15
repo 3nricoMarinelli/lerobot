@@ -42,7 +42,7 @@ class SO101FollowerEndEffector(SO101Follower):
     """
 
     config_class = SO101FollowerEndEffectorConfig
-    name = "so100_follower_end_effector"
+    name = "so101_follower_end_effector"
 
     def __init__(self, config: SO101FollowerEndEffectorConfig):
         super().__init__(config)
