@@ -11,12 +11,13 @@
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
+# See the License for the specific language governing peselfrmissions and
 # limitations under the License.
 
 import logging
 import time
 from typing import Any
+from math import atan2, degrees, hypot
 
 import numpy as np
 
@@ -37,7 +38,7 @@ class SO101FollowerEndEffector(SO101Follower):
     """
     SO101Follower robot with end-effector space control.
 
-    This robot inherits from SO101Follower but transforms actions from
+    This robot inherits from SO100Follower but transforms actions from
     end-effector space to joint space before sending them to the motors.
     """
 
@@ -69,8 +70,8 @@ class SO101FollowerEndEffector(SO101Follower):
         # Store the bounds for end-effector position
         self.end_effector_bounds = self.config.end_effector_bounds
 
-        self.current_ee_pos = None
-        self.current_joint_pos = None
+        self.ee_pose = None
+        self.joint_pos = None
 
     @property
     def action_features(self) -> dict[str, Any]:
@@ -111,43 +112,42 @@ class SO101FollowerEndEffector(SO101Follower):
 
         # Convert action to numpy array if not already
         if isinstance(action, dict):
-            if all(k in action for k in ["x", "y", "z", "roll", "pitch", "yaw"]):
+            if all(k in action for k in ["x", "y", "z", "roll", "pitch", "yaw"]) and self.ee_pose is not None:
                 if "gripper" not in action:
                     action["gripper"] = 1.0
                     logger.warning(
                     f"No gripper action provided, defaulting to 1.0 (open).")
+                
                 action = np.array([
-                    action["x"] * self.config.end_effector_step_sizes["x"],
-                    action["y"] * self.config.end_effector_step_sizes["y"],
-                    action["z"] * self.config.end_effector_step_sizes["z"],
-                    action["roll"] * self.config.end_effector_step_sizes["roll"],
-                    action["pitch"] * self.config.end_effector_step_sizes["pitch"],
-                    action["yaw"] * self.config.end_effector_step_sizes["yaw"],
+                    (self.ee_pose[0, 3] - action["x"]) * self.config.end_effector_step_sizes["x"],
+                    (self.ee_pose[1, 3] - action["y"]) * self.config.end_effector_step_sizes["y"],
+                    (self.ee_pose[2, 3] - action["z"]) * self.config.end_effector_step_sizes["z"],
+                    (degrees(atan2(self.ee_pose[2,1], self.ee_pose[2,2])) - action["roll"]) * self.config.end_effector_step_sizes["roll"],
+                    (degrees(-self.ee_pose[2,0], hypot(self.ee_pose[2,1], self.ee_pose[2,2])) - action["roll"]) * self.config.end_effector_step_sizes["pitch"],
+                    (degrees(self.ee_pose[1,0], self.ee_pose[0,0]) - action["roll"]) * self.config.end_effector_step_sizes["yaw"],
                     action["gripper"]
                 ], dtype=np.float32)
             else:
-                logger.warning(
-                    f"Expected action keys 'x', 'y', 'z', \
-                        'roll', 'pitch', 'yaw' got {list(action.keys())}"
-                )
+                if not all(k in action for k in ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]):
+                    logger.warning(
+                        f"Expected action keys 'x', 'y', 'z', "
+                        f"'roll', 'pitch', 'yaw' got {list(action.keys())}"
+                    )
                 action = np.zeros(7, dtype=np.float32)
 
         print(f"++++++++++++[DEBUG ] Actual action sent",action)
 
-        if self.current_joint_pos is None:
+        if self.joint_pos is None:
             # Read current joint positions
-            current_joint_pos = self.bus.sync_read("Present_Position")
-            self.current_joint_pos = np.array([current_joint_pos[name] for name in self.bus.motors])
+            joint_pos = self.bus.sync_read("Present_Position")
+            self.joint_pos = np.array([joint_pos[name] for name in self.bus.motors])
 
         # Calculate current end-effector position using forward kinematics
-        if self.current_ee_pos is None:
-            self.current_ee_pos = self.kinematics.forward_kinematics(self.current_joint_pos, frame=EE_FRAME)
+        if self.ee_pose is None:
+            self.ee_pose = self.kinematics.forward_kinematics(self.joint_pos, frame=EE_FRAME)
 
         # Set desired end-effector position by adding delta
         desired_ee_pos = np.eye(4)
-
-        # Get current orientation
-        current_rot = self.current_ee_pos[:3, :3]
 
         # Convert rotation deltas from degrees to radians
         roll = np.radians(action[3])
@@ -189,7 +189,7 @@ class SO101FollowerEndEffector(SO101Follower):
 
         # Compute inverse kinematics to get joint positions
         target_joint_values_in_degrees = self.kinematics.ik(
-            self.current_joint_pos, desired_ee_pos, position_only=True, frame=EE_FRAME
+            self.joint_pos, desired_ee_pos, position_only=True, frame=EE_FRAME
         )
 
         target_joint_values_in_degrees = np.clip(target_joint_values_in_degrees, -180.0, 180.0)
@@ -202,14 +202,14 @@ class SO101FollowerEndEffector(SO101Follower):
         # Gripper delta action is in the range 0 - 2,
         # We need to shift the action to the range -1, 1 so that we can expand it to -Max_gripper_pos, Max_gripper_pos
         joint_action["gripper.pos"] = np.clip(
-            self.current_joint_pos[-1] + (action[-1] - 1) * self.config.max_gripper_pos,
+            self.joint_pos[-1] + (action[-1] - 1) * self.config.max_gripper_pos,
             5,
             self.config.max_gripper_pos,
         )
 
-        self.current_ee_pos = desired_ee_pos.copy()
-        self.current_joint_pos = target_joint_values_in_degrees.copy()
-        self.current_joint_pos[-1] = joint_action["gripper.pos"]
+        self.ee_pose = desired_ee_pos.copy()
+        self.joint_pos = target_joint_values_in_degrees.copy()
+        self.joint_pos[-1] = joint_action["gripper.pos"]
 
         # DEBUG Prints: 
         
@@ -227,7 +227,7 @@ class SO101FollowerEndEffector(SO101Follower):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        # Read arm position
+        # Read aselfrm position
         start = time.perf_counter()
         obs_dict = self.bus.sync_read("Present_Position")
         obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
@@ -244,5 +244,5 @@ class SO101FollowerEndEffector(SO101Follower):
         return obs_dict
 
     def reset(self):
-        self.current_ee_pos = None
-        self.current_joint_pos = None
+        self.ee_pose = None
+        self.joint_pos = None
