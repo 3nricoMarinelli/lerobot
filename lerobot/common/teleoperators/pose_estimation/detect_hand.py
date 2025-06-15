@@ -12,7 +12,6 @@ mp_styles = mp.solutions.drawing_styles
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server_address = ('localhost', 11310)
-# sock.bind(server_address)  # <-- Ne pas binder si on envoie seulement
 
 # Charger calibration
 with np.load("calibration_data.npz") as X:
@@ -70,9 +69,12 @@ def draw_axes(img, origin_lm, R, scale=100):
     cv2.putText(img, 'X', tuple(x_end), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
     cv2.putText(img, 'Y', tuple(y_end), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
     cv2.putText(img, 'Z', tuple(z_end), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-    
-def send_hand_data(pos, euler):
-    data = struct.pack('6f', pos[0], pos[1], pos[2], euler[0], euler[1], euler[2])
+
+def send_hand_data(pos, euler, opening_ratio):
+    data = struct.pack('7f',
+                       pos[0], pos[1], pos[2],
+                       euler[0], euler[1], euler[2],
+                       opening_ratio)
     sock.sendto(data, server_address)
 
 cap = cv2.VideoCapture(1)
@@ -98,7 +100,6 @@ with mp_hands.Hands(
 
         now = time.time()
         if now - prev_time < frame_time:
-            # throttle frame rate
             time.sleep(frame_time - (now - prev_time))
         prev_time = time.time()
 
@@ -112,21 +113,19 @@ with mp_hands.Hands(
             lm = res.multi_hand_landmarks[0]
 
             Rm, p0, p9 = get_hand_axes_and_origin(lm)
-
             draw_axes(img, lm.landmark[0], Rm)
 
+            # Repères non déformés
             pt0 = undistort_landmark(lm.landmark[0], K, dist, img.shape)
             pt9 = undistort_landmark(lm.landmark[9], K, dist, img.shape)
 
             dist_px = pixel_distance(pt0, pt9)
             focal_length_px = (K[0,0] + K[1,1]) / 2
-
             distance_cm = (focal_length_px * REAL_LENGTH_CM) / dist_px
 
             x_cm = (pt0[0] - K[0,2]) * distance_cm / K[0,0]
             y_cm = (pt0[1] - K[1,2]) * distance_cm / K[1,1]
             z_cm = distance_cm
-
             pos_cm = np.array([x_cm, y_cm, z_cm])
 
             if reference_position is None:
@@ -137,14 +136,29 @@ with mp_hands.Hands(
             rel_pos_cm = pos_cm - reference_position
             rel_rot = reference_rotation.T @ Rm
             euler_angles = get_euler_angles(rel_rot)
-            send_hand_data(rel_pos_cm, euler_angles)
+
+            # Calcul de l'ouverture normalisée
+            pt_thumb = undistort_landmark(lm.landmark[4], K, dist, img.shape)
+            pt_pinky = undistort_landmark(lm.landmark[20], K, dist, img.shape)
+            pt_index = undistort_landmark(lm.landmark[5], K, dist, img.shape)
+            pt_ring = undistort_landmark(lm.landmark[17], K, dist, img.shape)
+
+            ouverture_px = pixel_distance(pt_thumb, pt_pinky)
+            largeur_paume_px = pixel_distance(pt_index, pt_ring)
+            opening_ratio = ouverture_px / largeur_paume_px
+
+            send_hand_data(rel_pos_cm, euler_angles, opening_ratio)
 
             roll, pitch, yaw = euler_angles
-
-            text_pos = f"X: {rel_pos_cm[0]:+.1f}cm  Y: {rel_pos_cm[1]:+.1f}cm  Z: {rel_pos_cm[2]:+.1f}cm"
-            text_rot = f"Roll: {roll:+.1f}deg  Pitch: {pitch:+.1f}deg  Yaw: {yaw:+.1f}deg"
-            cv2.putText(img, text_pos, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            cv2.putText(img, text_rot, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            cv2.putText(img,
+                        f"X:{rel_pos_cm[0]:+.1f}cm Y:{rel_pos_cm[1]:+.1f}cm Z:{rel_pos_cm[2]:+.1f}cm",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
+            cv2.putText(img,
+                        f"Roll:{roll:+.1f} Pitch:{pitch:+.1f} Yaw:{yaw:+.1f}",
+                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
+            cv2.putText(img,
+                        f"Open ratio:{opening_ratio:.2f}",
+                        (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
 
             mp_drawing.draw_landmarks(
                 img, lm, mp_hands.HAND_CONNECTIONS,
@@ -155,7 +169,7 @@ with mp_hands.Hands(
         cv2.imshow("pose_extract", img)
 
         key = cv2.waitKey(5) & 0xFF
-        if key == 27:  # ESC
+        if key == 27:
             break
         elif key == ord('r'):
             reference_position = None
