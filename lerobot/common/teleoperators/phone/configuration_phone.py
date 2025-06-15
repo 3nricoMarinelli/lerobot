@@ -22,4 +22,7 @@ from ..config import TeleoperatorConfig
 @TeleoperatorConfig.register_subclass("phone")
 @dataclass
 class PhoneTeleopConfig(TeleoperatorConfig):
-    use_gripper: bool = True
+    use_gripper: bool = False
+    x_step_size = y_step_size = z_step_size = 0.01 # FIX: arbitrary value
+    port = 50010 # FIX: arbitrary value for the phone HTTP server
+    

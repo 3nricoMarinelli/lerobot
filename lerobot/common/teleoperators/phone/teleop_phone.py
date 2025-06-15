@@ -1,4 +1,5 @@
-# !/usr/bin/env python
+#!/usr/bin/env python
+# Copyright 2025 The HuggingFace Inc. team.
 
 import sys
 from enum import IntEnum
@@ -9,116 +10,179 @@ import numpy as np
 from ..teleoperator import Teleoperator
 from .configuration_phone import PhoneTeleopConfig
 
-
+# --------------------------------------------------------------------- #
+#  ENUM / MAP FOR GRIPPER
+# --------------------------------------------------------------------- #
 class GripperAction(IntEnum):
     CLOSE = 0
-    STAY = 1
-    OPEN = 2
+    STAY  = 1
+    OPEN  = 2
 
 
 gripper_action_map = {
     "close": GripperAction.CLOSE.value,
-    "open": GripperAction.OPEN.value,
-    "stay": GripperAction.STAY.value,
+    "open":  GripperAction.OPEN.value,
+    "stay":  GripperAction.STAY.value,
 }
 
-
+# --------------------------------------------------------------------- #
+#  BASE TELEOP — Δx Δy Δz (+ gripper)                                  #
+# --------------------------------------------------------------------- #
 class PhoneTeleop(Teleoperator):
     """
-    Teleop class to use phone inputs for control.
+    Teleoperator that converts phone‑generated IMU deltas into
+    Cartesian position commands (Δx, Δy, Δz) plus an optional gripper
+    signal.  Uses IMUController (HTTP/UDP) under the hood.
     """
 
     config_class = PhoneTeleopConfig
     name = "phone"
 
+    # -------- life‑cycle ------------------------------------------------
     def __init__(self, config: PhoneTeleopConfig):
         super().__init__(config)
-        self.config = config
-        self.robot_type = config.type
+        self.config      = config
+        self.robot_type  = config.type
+        self.gamepad     = None       # set in connect()
 
-        self.gamepad = None
 
+    def connect(self) -> None:
+        """
+        Create the low‑level driver (IMUController) and start it.
+        For historical reasons we still keep the macOS HID path, but
+        most users will go through the HTTP IMU driver.
+        """
+        if sys.platform == "darwin":
+            from .phone_utils import IMUController as Driver
+        else:
+            from .phone_utils import IMUController as Driver   # same driver on non‑mac
+
+        self.gamepad = Driver(
+            x_step_size=self.config.x_step_size,
+            y_step_size=self.config.y_step_size,
+            z_step_size=self.config.z_step_size,
+            port=self.config.port,
+        )
+        self.gamepad.start()
+
+    def disconnect(self) -> None:
+        if self.gamepad:
+            self.gamepad.stop()
+            self.gamepad = None
+
+    # -------- schema descriptors ---------------------------------------
     @property
     def action_features(self) -> dict:
         if self.config.use_gripper:
             return {
-                "dtype": "float32",
-                "shape": (4,),
-                "names": {"delta_x": 0, "delta_y": 1, "delta_z": 2, "gripper": 3},
+                "dtype":  "float32",
+                "shape":  (4,),
+                "names":  {"delta_x": 0, "delta_y": 1, "delta_z": 2, "gripper": 3},
             }
-        else:
-            return {
-                "dtype": "float32",
-                "shape": (3,),
-                "names": {"delta_x": 0, "delta_y": 1, "delta_z": 2},
-            }
+        return {
+            "dtype": "float32",
+            "shape": (3,),
+            "names": {"delta_x": 0, "delta_y": 1, "delta_z": 2},
+        }
 
     @property
     def feedback_features(self) -> dict:
         return {}
 
-    def connect(self) -> None:
-        # use HidApi for macos
-        if sys.platform == "darwin":
-            # NOTE: On macOS, pygame doesn’t reliably detect input from some controllers so we fall back to hidapi
-            from .phone_utils import IMUController as Gamepad
-        else:
-            from .phone_utils import GamepadController as Gamepad
-
-        self.gamepad = Gamepad()
-        self.gamepad.start()
-
+    # -------- polling ---------------------------------------------------
     def get_action(self) -> dict[str, Any]:
-        # Update the controller to get fresh inputs
+        if not self.gamepad:
+            raise RuntimeError("PhoneTeleop not connected")
+
         self.gamepad.update()
+        dx, dy, dz = self.gamepad.get_deltas()
 
-        # Get movement deltas from the controller
-        delta_x, delta_y, delta_z = self.gamepad.get_deltas()
+        action_dict: dict[str, Any] = {
+            "x.vel": float(dx),
+            "y.vel": float(dy),
+            "theta.vel": float(dz),
 
-        # Create action from gamepad input
-        gamepad_action = np.array([delta_x, delta_y, delta_z], dtype=np.float32)
-
-        action_dict = {
-            "delta_x": gamepad_action[0],
-            "delta_y": gamepad_action[1],
-            "delta_z": gamepad_action[2],
+            # x.vel": x_cmd,
+            # "y.vel": y_cmd,
+            # "theta.vel": theta_cmd,
         }
 
-        # Default gripper action is to stay
-        gripper_action = GripperAction.STAY.value
         if self.config.use_gripper:
-            gripper_command = self.gamepad.gripper_command()
-            gripper_action = gripper_action_map[gripper_command]
-            action_dict["gripper"] = gripper_action
+            cmd  = self.gamepad.gripper_command()            # "open" | "close" | "stay"
+            gval = gripper_action_map[cmd]
+            action_dict["gripper"] = gval
 
         return action_dict
 
-    def disconnect(self) -> None:
-        """Disconnect from the gamepad."""
-        if self.gamepad is not None:
-            self.gamepad.stop()
-            self.gamepad = None
-
+    # -------- misc / passthrough ---------------------------------------
     def is_connected(self) -> bool:
-        """Check if gamepad is connected."""
         return self.gamepad is not None
 
-    def calibrate(self) -> None:
-        """Calibrate the gamepad."""
-        # No calibration needed for gamepad
-        pass
+    def calibrate(self)        -> None: pass
+    def is_calibrated(self)    -> bool: return True
+    def configure(self)        -> None: pass
+    def send_feedback(self, *_): pass
 
-    def is_calibrated(self) -> bool:
-        """Check if gamepad is calibrated."""
-        # Gamepad doesn't require calibration
-        return True
+# --------------------------------------------------------------------- #
+#  EXTENDED TELEOP — Δx Δy Δz Δroll Δpitch Δyaw (+ gripper)             #
+# --------------------------------------------------------------------- #
+class PhoneEndEffectorTeleop(PhoneTeleop):
+    """
+    Same as PhoneTeleop but also outputs orientation deltas
+    (roll, pitch, yaw) when the IMU driver provides them.
+    Expected extra driver method:  get_rot_deltas() -> (dr, dp, dy)
+    """
 
-    def configure(self) -> None:
-        """Configure the gamepad."""
-        # No additional configuration needed
-        pass
+    name = "phone_eef"
 
-    def send_feedback(self, feedback: dict) -> None:
-        """Send feedback to the gamepad."""
-        # Gamepad doesn't support feedback
-        pass
+    # ------ schema with 6‑DoF (+ gripper) ------------------------------
+    @property
+    def action_features(self) -> dict:
+        if self.config.use_gripper:
+            return {
+                "dtype": "float32",
+                "shape": (7,),
+                "names": {
+                    "delta_x": 0, "delta_y": 1, "delta_z": 2,
+                    "delta_roll": 3, "delta_pitch": 4, "delta_yaw": 5,
+                    "gripper": 6,
+                },
+            }
+        return {
+            "dtype": "float32",
+            "shape": (6,),
+            "names": {
+                "delta_x": 0, "delta_y": 1, "delta_z": 2,
+                "delta_roll": 3, "delta_pitch": 4, "delta_yaw": 5,
+            },
+        }
+
+    # ------ action polling ---------------------------------------------
+    def get_action(self) -> dict[str, Any]:
+        if not self.gamepad:
+            raise RuntimeError("PhoneEndEffectorTeleop not connected")
+
+        self.gamepad.update()
+        dx, dy, dz = self.gamepad.get_deltas()
+
+        # Orientation deltas: fall back to zeros if driver lacks method
+        if hasattr(self.gamepad, "get_rot_deltas"):
+            dr, dp, dyaw = self.gamepad.get_rot_deltas()
+        else:
+            dr = dp = dyaw = 0.0
+
+        action = {
+            "delta_x":    float(dx),
+            "delta_y":    float(dy),
+            "delta_z":    float(dz),
+            "delta_roll": float(dr),
+            "delta_pitch":float(dp),
+            "delta_yaw":  float(dyaw),
+        }
+
+        if self.config.use_gripper:
+            cmd  = self.gamepad.gripper_command()
+            gval = gripper_action_map[cmd]
+            action["gripper"] = gval
+
+        return action
