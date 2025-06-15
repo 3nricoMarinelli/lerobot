@@ -163,102 +163,41 @@ class IMUController(InputController):
         pass
 
     def get_deltas(self):
-        """Convert IMU acceleration data to dx, dy, dz values."""
+        """Return (dx, dy, dz) derived from the latest IMU window."""
+
         with self.data_lock:
-            if not all(len(self.imu_data[k]) > 0 for k in ["ax", "ay", "az"]):
+            # Require at least one sample of each
+
+            if any(len(self.imu_data[k]) == 0 for k in ["ax", "ay", "az", "gx", "gy", "gz"]):
                 return 0.0, 0.0, 0.0
+            
+            print("I was called -------------------------------")
+        
 
-            # Use average to reduce noise
-            avg_ax = sum(self.imu_data["ax"]) / len(self.imu_data["ax"])
-            avg_ay = sum(self.imu_data["ay"]) / len(self.imu_data["ay"])
-            avg_az = sum(self.imu_data["az"]) / len(self.imu_data["az"])
+            # Smoothed averages
+            ax = sum(self.imu_data["ax"]) / len(self.imu_data["ax"])
+            ay = sum(self.imu_data["ay"]) / len(self.imu_data["ay"])
+            az = sum(self.imu_data["az"]) / len(self.imu_data["az"])
+            gx = sum(self.imu_data["gx"]) / len(self.imu_data["gx"])
+            gy = sum(self.imu_data["gy"]) / len(self.imu_data["gy"])
+            gz = sum(self.imu_data["gz"]) / len(self.imu_data["gz"])
 
-        dx = avg_ax * self.x_step_size
-        dy = avg_ay * self.y_step_size
-        dz = avg_az * self.z_step_size
+        # 1) gyro‑based translations
+        dx_g =  gz * self.gyro_scale * self.dt   # rot Z → +X
+        dy_g =  gx * self.gyro_scale * self.dt   # rot X → +Y
+        dz_g =  gy * self.gyro_scale * self.dt   # rot Y → +Z
+
+        # 2) optional accel push (gravity‑compensated)
+        dz_lin = (az - self.gravity_z) * self.acc_gain * self.dt
+        dx_lin =  ax * self.acc_gain * self.dt
+        dy_lin =  ay * self.acc_gain * self.dt
+
+        dx = dx_g + dx_lin
+        dy = dy_g + dy_lin
+        dz = dz_g + dz_lin
+
+        print("******************************************************************************************************[get_deltas]", dx, dy, dz)
+
+        # print("[get_deltas] self.imu_data", actiondict)
+
         return dx, dy, dz
-
-# from flask import Flask, request
-# import threading
-# import time
-# import matplotlib.pyplot as plt
-# from collections import deque
-
-# app = Flask(__name__)
-# pending_vibration = False
-
-# # Buffers for IMU data (last N points)
-# N = 100
-# imu_data = {
-#     'ax': deque(maxlen=N),
-#     'ay': deque(maxlen=N),
-#     'az': deque(maxlen=N),
-#     'gx': deque(maxlen=N),
-#     'gy': deque(maxlen=N),
-#     'gz': deque(maxlen=N)
-# }
-
-# # Lock to prevent race conditions
-# data_lock = threading.Lock()
-
-# @app.route('/volume', methods=['POST'])
-# def volume_event():
-#     event = request.form.get('event')
-#     print(f"Received volume event: {event}")
-#     if event == "VOLUME_UP":
-#         print("Move servoR to grip")
-#     elif event == "VOLUME_DOWN":
-#         print("Release servo grip")
-#     return 'OK', 200
-
-# @app.route('/imu', methods=['POST'])
-# def imu():
-#     global pending_vibration
-#     data = request.get_json()
-#     print("IMU:", data)
-
-#     with data_lock:
-#         for key in imu_data:
-#             imu_data[key].append(data.get(key, 0))
-
-#     if pending_vibration:
-#         pending_vibration = False
-#         return "VIBRATE", 200
-#     return "OK", 200
-
-# @app.route('/vibrate_once', methods=['POST'])
-# def vibrate_once():
-#     global pending_vibration
-#     pending_vibration = True
-#     return 'queued', 200
-
-# def plot_thread():
-#     plt.ion()
-#     fig, axs = plt.subplots(2, 1, figsize=(10, 6))
-
-#     while True:
-#         with data_lock:
-#             axs[0].cla()
-#             axs[1].cla()
-#             axs[0].set_title("Accelerometer (ax, ay, az)")
-#             axs[1].set_title("Gyroscope (gx, gy, gz)")
-
-#             axs[0].plot(imu_data['ax'], label='ax')
-#             axs[0].plot(imu_data['ay'], label='ay')
-#             axs[0].plot(imu_data['az'], label='az')
-
-#             axs[1].plot(imu_data['gx'], label='gx')
-#             axs[1].plot(imu_data['gy'], label='gy')
-#             axs[1].plot(imu_data['gz'], label='gz')
-
-#             axs[0].legend()
-#             axs[1].legend()
-
-#         plt.pause(0.05)
-
-# if __name__ == "__main__":
-#     # Start plotting in a background thread
-#     threading.Thread(target=plot_thread, daemon=True).start()
-
-#     # Start Flask app
-#     app.run(host='127.0.0.1', port=5010)

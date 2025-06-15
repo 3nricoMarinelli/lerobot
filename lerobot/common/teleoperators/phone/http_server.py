@@ -52,6 +52,16 @@ def vibrate_once():
     pending_vibration = True
     return 'queued', 200
 
+@app.route('/imu/latest', methods=['GET'])
+def imu_latest():
+    """Return the most recent ax, ay, az as JSON for the viewer script."""
+    with data_lock:
+        return {
+            'ax': imu_data['ax'][-1] if imu_data['ax'] else 0.0,
+            'ay': imu_data['ay'][-1] if imu_data['ay'] else 0.0,
+            'az': imu_data['az'][-1] if imu_data['az'] else 0.0,
+        }
+
 def plot_thread():
     plt.ion()
     fig, axs = plt.subplots(2, 1, figsize=(10, 6))
@@ -75,6 +85,8 @@ def plot_thread():
             axs[1].legend()
 
         plt.pause(0.05)
+
+
 
 if __name__ == "__main__":
     # Start plotting in a background thread
