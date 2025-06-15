@@ -4,6 +4,7 @@ import numpy as np
 import math
 import socket
 import struct
+import time
 
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
@@ -11,13 +12,23 @@ mp_styles = mp.solutions.drawing_styles
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server_address = ('localhost', 11310)
-sock.bind(server_address)
+# sock.bind(server_address)  # <-- Ne pas binder si on envoie seulement
 
-def send_hand_data(position, euler_angles):
-    """Pack and send hand tracking data"""
-    # Pack data: 3 for position, 3 for euler angles
-    data = struct.pack('6f', *position, *euler_angles)
-    sock.sendto(data, ('localhost', 11310))
+# Charger calibration
+with np.load("calibration_data.npz") as X:
+    K = X["camera_matrix"]
+    dist = X["dist_coeffs"]
+
+REAL_LENGTH_CM = 8.0
+
+def undistort_landmark(landmark, K, dist, frame_shape):
+    h, w = frame_shape[:2]
+    pt = np.array([[landmark.x * w, landmark.y * h]], dtype=np.float32)
+    pt_undist = cv2.undistortPoints(pt.reshape(-1, 1, 2), K, dist, P=K)
+    return pt_undist[0,0]
+
+def pixel_distance(p1, p2):
+    return np.linalg.norm(np.array(p1) - np.array(p2))
 
 def normalize(v):
     return v / np.linalg.norm(v)
@@ -31,7 +42,7 @@ def get_hand_axes_and_origin(lm, ref_idx=[0, 5, 17, 9]):
     x_axis = normalize(p5 - p0)
     y_axis = normalize(p17 - p0)
     z_axis = normalize(np.cross(x_axis, y_axis))
-    y_axis = normalize(np.cross(z_axis, x_axis))  # orthogonalisation
+    y_axis = normalize(np.cross(z_axis, x_axis))
 
     Rm = np.column_stack((x_axis, y_axis, z_axis))
     return Rm, p0, p9
@@ -59,26 +70,37 @@ def draw_axes(img, origin_lm, R, scale=100):
     cv2.putText(img, 'X', tuple(x_end), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
     cv2.putText(img, 'Y', tuple(y_end), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
     cv2.putText(img, 'Z', tuple(z_end), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+    
+def send_hand_data(pos, euler):
+    data = struct.pack('6f', pos[0], pos[1], pos[2], euler[0], euler[1], euler[2])
+    sock.sendto(data, server_address)
 
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(1)
 
-reference_rotation = None
 reference_position = None
-reference_scale_z = None
-
-def to_mm(norm_coord, frame_size):
-    return norm_coord * frame_size * 200
+reference_rotation = None
 
 with mp_hands.Hands(
     model_complexity=0,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5,
-    max_num_hands=1) as hands:
+    max_num_hands=1
+) as hands:
+
+    prev_time = 0
+    target_fps = 30
+    frame_time = 1.0 / target_fps
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
+
+        now = time.time()
+        if now - prev_time < frame_time:
+            # throttle frame rate
+            time.sleep(frame_time - (now - prev_time))
+        prev_time = time.time()
 
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img.flags.writeable = False
@@ -88,43 +110,39 @@ with mp_hands.Hands(
 
         if res.multi_hand_landmarks:
             lm = res.multi_hand_landmarks[0]
+
             Rm, p0, p9 = get_hand_axes_and_origin(lm)
 
             draw_axes(img, lm.landmark[0], Rm)
 
-            frame_h, frame_w, _ = img.shape
+            pt0 = undistort_landmark(lm.landmark[0], K, dist, img.shape)
+            pt9 = undistort_landmark(lm.landmark[9], K, dist, img.shape)
 
-            # Calcul du scale Z par la distance p0-p9 en pixels (distance réelle inconnue, mais constante)
-            p0_px = np.array([lm.landmark[0].x * frame_w, lm.landmark[0].y * frame_h])
-            p9_px = np.array([lm.landmark[9].x * frame_w, lm.landmark[9].y * frame_h])
-            scale_z = np.linalg.norm(p0_px - p9_px)
+            dist_px = pixel_distance(pt0, pt9)
+            focal_length_px = (K[0,0] + K[1,1]) / 2
 
-            # Approximate position X Y Z en mm (X, Y normalisés convertis, Z estimé par scale inverse)
-            pos_x = to_mm(p0[0], frame_w)
-            pos_y = to_mm(p0[1], frame_h)
+            distance_cm = (focal_length_px * REAL_LENGTH_CM) / dist_px
 
-            if reference_scale_z is None:
-                reference_scale_z = scale_z
+            x_cm = (pt0[0] - K[0,2]) * distance_cm / K[0,0]
+            y_cm = (pt0[1] - K[1,2]) * distance_cm / K[1,1]
+            z_cm = distance_cm
 
-            # Inversion: plus la main est proche, plus scale_z est grand => Z diminue quand scale_z augmente
-            # On fait un Z relatif en mm, proportionnel à l'inverse du scale_z
-            pos_z = 200 * (reference_scale_z / scale_z - 1)  # Z=0 au départ
-
-            pos_mm = np.array([pos_x, pos_y, pos_z])
+            pos_cm = np.array([x_cm, y_cm, z_cm])
 
             if reference_position is None:
-                reference_position = pos_mm
+                reference_position = pos_cm
             if reference_rotation is None:
                 reference_rotation = Rm
 
-            rel_pos = pos_mm - reference_position
+            rel_pos_cm = pos_cm - reference_position
             rel_rot = reference_rotation.T @ Rm
             euler_angles = get_euler_angles(rel_rot)
-            send_hand_data(rel_pos, euler_angles)
+            send_hand_data(rel_pos_cm, euler_angles)
+
             roll, pitch, yaw = euler_angles
 
-            text_pos = f"X: {rel_pos[0]:+.1f}mm  Y: {rel_pos[1]:+.1f}mm  Z: {rel_pos[2]:+.1f}mm"
-            text_rot = f"Roll: {roll:+.1f}°  Pitch: {pitch:+.1f}°  Yaw: {yaw:+.1f}°"
+            text_pos = f"X: {rel_pos_cm[0]:+.1f}cm  Y: {rel_pos_cm[1]:+.1f}cm  Z: {rel_pos_cm[2]:+.1f}cm"
+            text_rot = f"Roll: {roll:+.1f}deg  Pitch: {pitch:+.1f}deg  Yaw: {yaw:+.1f}deg"
             cv2.putText(img, text_pos, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             cv2.putText(img, text_rot, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
@@ -134,15 +152,14 @@ with mp_hands.Hands(
                 mp_styles.get_default_hand_connections_style()
             )
 
-        cv2.imshow("Main + Repère + Position + Rotation", img)
+        cv2.imshow("pose_extract", img)
 
         key = cv2.waitKey(5) & 0xFF
-        if key == 27:
+        if key == 27:  # ESC
             break
         elif key == ord('r'):
             reference_position = None
             reference_rotation = None
-            reference_scale_z = None
 
 cap.release()
 cv2.destroyAllWindows()
