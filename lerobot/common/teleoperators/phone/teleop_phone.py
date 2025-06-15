@@ -10,6 +10,11 @@ import numpy as np
 from ..teleoperator import Teleoperator
 from .configuration_phone import PhoneTeleopConfig
 
+from .camera_control import CameraControl # Camera udp driver
+from .configuration_phone import CameraTeleopConfig
+
+
+
 # --------------------------------------------------------------------- #
 #  ENUM / MAP FOR GRIPPER
 # --------------------------------------------------------------------- #
@@ -26,7 +31,7 @@ gripper_action_map = {
 }
 
 # --------------------------------------------------------------------- #
-#  BASE TELEOP — Δx Δy Δz (+ gripper)                                  #
+#  BASE TELEOP — Δx Δy Δz                                  #
 # --------------------------------------------------------------------- #
 class PhoneTeleop(Teleoperator):
     """
@@ -186,3 +191,60 @@ class PhoneEndEffectorTeleop(PhoneTeleop):
             action["gripper"] = gval
 
         return action
+
+
+# --------------------------------------------------------------------- #
+#  CAMERA TELEOP — Δx Δy Δz                                  #
+# --------------------------------------------------------------------- #
+class CameraTeleop(Teleoperator):
+    """
+    Teleoperator that converts hand‑tracking deltas (Δx,Δy,Δz) coming
+    over UDP from `camera_control.py` into Cartesian translation commands.
+    """
+
+    config_class = CameraTeleopConfig
+    name = "camera"
+
+    # ────────── life‑cycle ────────────────────────────────────────────
+    def __init__(self, config: CameraTeleopConfig):
+        super().__init__(config)
+        self.config = config
+        self.driver: CameraControl | None = None
+
+    def connect(self) -> None:
+        self.driver = CameraControl(self.config)
+        self.driver.connect()
+
+    def disconnect(self) -> None:
+        if self.driver:
+            self.driver.disconnect()
+            self.driver = None
+
+    # ────────── schema descriptors ────────────────────────────────────
+    @property
+    def action_features(self) -> dict:
+        return {
+            "dtype":  "float32",
+            "shape":  (3,),
+            "names":  {"delta_x": 0, "delta_y": 1, "delta_z": 2},
+        }
+
+    @property
+    def feedback_features(self) -> dict:     # none
+        return {}
+
+    # ────────── polling ───────────────────────────────────────────────
+    def get_action(self) -> dict[str, Any]:
+        if not self.driver:
+            raise RuntimeError("CameraTeleop not connected")
+
+        action = self.driver.get_action()    # {'delta_x':…, 'delta_y':…, 'delta_z':…}
+        print("Action dict pulled is:", action)
+        return action
+
+    # ────────── stubs / passthrough ───────────────────────────────────
+    def is_connected(self) -> bool:  return self.driver is not None
+    def calibrate(self) -> None:     pass
+    def is_calibrated(self) -> bool: return True
+    def configure(self) -> None:     pass
+    def send_feedback(self, *_):     pass

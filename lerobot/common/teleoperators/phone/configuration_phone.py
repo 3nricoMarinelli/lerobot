@@ -26,3 +26,11 @@ class PhoneTeleopConfig(TeleoperatorConfig):
     x_step_size = y_step_size = z_step_size = 0.01 # FIX: arbitrary value
     port = 5010 # FIX: arbitrary value for the phone HTTP server
     
+
+@TeleoperatorConfig.register_subclass("camera")
+@dataclass
+class CameraTeleopConfig(TeleoperatorConfig):
+    use_gripper: bool = False
+    port: int = 11310 
+    
+
