@@ -58,8 +58,12 @@ def make_teleoperator_from_config(config: TeleoperatorConfig) -> Teleoperator:
         from .phone.teleop_phone import PhoneTeleop
         return PhoneTeleop(config)
 
-    elif config.type == "camera":
-        from .phone.teleop_phone import CameraTeleop
-        return CameraTeleop(config)
+        return  PhoneTeleop(config) #PhoneEndEffectorTeleop(config)
+    
+    elif config.type == "pose_estimation":
+        from .pose_estimation.teleop_pose_estimation import PoseEstimation
+        
+        return PoseEstimation(config)
+
     else:
         raise ValueError(config.type)
