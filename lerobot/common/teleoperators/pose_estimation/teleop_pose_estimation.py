@@ -20,7 +20,6 @@ import socket
 import struct
 import numpy as np
 import multiprocessing
-import sys
 import os
 from pathlib import Path
 
@@ -43,12 +42,35 @@ class PoseEstimation(Teleoperator):
     """
 
     config_class = PoseEstimationConfig
+    name = "pose_estimation"
 
     def __init__(self, config: PoseEstimationConfig):
         super().__init__(config)
         self.config = config
         self.hand_detection_process = None
         self.sock = None
+
+    @property
+    def feedback_features(self) -> dict:
+        return {}
+
+    @property
+    def is_connected(self) -> bool:
+        """Check if the device is connected"""
+        return self.sock is not None and self.hand_detection_process is not None and self.hand_detection_process.is_alive()
+    
+    @property
+    def is_calibrated(self) -> bool:
+        pass
+
+    def configure(self):
+        pass
+
+    def send_feedback(self, feedback: dict[str, Any]) -> None:
+        pass
+
+    def calibrate(self) -> None:
+        pass
 
     def connect(self) -> bool:
         """Connect to the device and start hand detection"""
@@ -73,6 +95,7 @@ class PoseEstimation(Teleoperator):
     def disconnect(self) -> bool:
         """Disconnect from the device and stop hand detection"""
         try:
+            os.system("pkill -f detect_hand.py")
             if self.hand_detection_process and self.hand_detection_process.is_alive():
                 self.hand_detection_process.terminate()
                 self.hand_detection_process.join()
@@ -93,13 +116,13 @@ class PoseEstimation(Teleoperator):
             "dtype": "float32",
             "shape": (7,),
             "names": {
-                "x.pose": 0,
-                "y.pose": 1,
-                "z.pose": 2,
-                "roll.pose": 3,
-                "pitch.pose": 4,
-                "yaw.pose": 5,
-                # "delta_gripper": 6
+                "delta_x": 0,
+                "delta_y": 1,
+                "delta_z": 2,
+                "roll": 3,
+                "pitch": 4,
+                "yaw": 5,
+                "gripper": 6
             },
         }
 
@@ -112,8 +135,8 @@ class PoseEstimation(Teleoperator):
         # call the pose estimation model to get the action
         try:
             data, _ = self.sock.recvfrom(1024)
-            # Unpack 15 floats: 9 for rotation matrix, 3 for position, 3 for euler angles
-            unpacked = struct.unpack('15f', data)
+            # Unpack 6 floats: 3 for position, 3 for euler angles
+            unpacked = struct.unpack('6f', data)
             
             # Reconstruct data
             position = np.array(unpacked[:3])
@@ -122,13 +145,15 @@ class PoseEstimation(Teleoperator):
             logger.error(f"Socket error: {e}")
             raise DeviceNotConnectedError("Failed to receive data from the pose estimation model.")
 
+
         action_dict = {
-            "x.pose": position[0],
-            "y.pose": position[1],
-            "z.pose": position[2],
-            "roll.pose": euler_angles[0],
-            "pitch.pose": euler_angles[1],
-            "yaw.pose": euler_angles[2]
+            "delta_x": position[0],
+            "delta_y": position[1],
+            "delta_z": position[2],
+            "roll": euler_angles[0],
+            "pitch": euler_angles[1],
+            "yaw": euler_angles[2],
+            #TODO: Implement gripper control
         }
 
         return action_dict

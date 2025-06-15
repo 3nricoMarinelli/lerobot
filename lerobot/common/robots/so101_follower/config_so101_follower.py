@@ -61,9 +61,12 @@ class SO101FollowerEndEffectorConfig(SO101FollowerConfig):
 
     end_effector_step_sizes: dict[str, float] = field(
         default_factory=lambda: {
-            "x": 0.02,
-            "y": 0.02,
-            "z": 0.02,
+            "x": 1,
+            "y": 1,
+            "z": 1,
+            "roll": 1,
+            "pitch": 1,
+            "yaw": 1,
         }
     )
 
