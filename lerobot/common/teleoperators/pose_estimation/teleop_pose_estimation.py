@@ -116,9 +116,9 @@ class PoseEstimation(Teleoperator):
             "dtype": "float32",
             "shape": (7,),
             "names": {
-                "delta_x": 0,
-                "delta_y": 1,
-                "delta_z": 2,
+                "x": 0,
+                "y": 1,
+                "z": 2,
                 "roll": 3,
                 "pitch": 4,
                 "yaw": 5,
@@ -136,24 +136,25 @@ class PoseEstimation(Teleoperator):
         try:
             data, _ = self.sock.recvfrom(1024)
             # Unpack 6 floats: 3 for position, 3 for euler angles
-            unpacked = struct.unpack('6f', data)
+            unpacked = struct.unpack('7f', data)
             
             # Reconstruct data
             position = np.array(unpacked[:3])
             euler_angles = np.array(unpacked[3:6])
+            gripper = unpacked[6]  # Gripper state
         except socket.error as e:
             logger.error(f"Socket error: {e}")
             raise DeviceNotConnectedError("Failed to receive data from the pose estimation model.")
 
 
         action_dict = {
-            "delta_x": position[0],
-            "delta_y": position[1],
-            "delta_z": position[2],
+            "x": position[0],
+            "y": position[1],
+            "z": position[2],
             "roll": euler_angles[0],
             "pitch": euler_angles[1],
             "yaw": euler_angles[2],
-            #TODO: Implement gripper control
+            "gripper": gripper
         }
 
         return action_dict
