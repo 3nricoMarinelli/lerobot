@@ -97,15 +97,15 @@ class PhoneTeleop(Teleoperator):
         self.gamepad.update()
         dx, dy, dz = self.gamepad.get_deltas()
 
+        print("**************[get_action] dx, dy and dz is:", dx, dy, dz)
         action_dict: dict[str, Any] = {
             "x.vel": float(dx),
             "y.vel": float(dy),
             "theta.vel": float(dz),
 
-            # x.vel": x_cmd,
-            # "y.vel": y_cmd,
-            # "theta.vel": theta_cmd,
         }
+
+        print("Action dict pulled is:", action_dict)
 
         if self.config.use_gripper:
             cmd  = self.gamepad.gripper_command()            # "open" | "close" | "stay"
